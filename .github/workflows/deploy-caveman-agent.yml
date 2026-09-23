@@ -21,6 +21,10 @@ on:
         description: 'Deploy with --allow-unauthenticated (anyone with the URL can spend Vertex quota)'
         type: boolean
         default: false
+      with_ui:
+        description: 'Serve the ADK web UI (--with_ui). ADK marks this dev/test only — off by default so an ordinary push never turns it on in prod'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -77,6 +81,7 @@ jobs:
           # gcloud prompts are fatal on a runner with no tty.
           CLOUDSDK_CORE_DISABLE_PROMPTS: '1'
           ACCESS_FLAG: ${{ inputs.public && '--allow-unauthenticated' || '--no-allow-unauthenticated' }}
+          UI_FLAG: ${{ inputs.with_ui && '--with_ui' || '' }}
         run: |
           set -o pipefail
           # `adk deploy cloud_run` exits 0 even when the gcloud call under it
@@ -87,18 +92,28 @@ jobs:
           # a package the generated Dockerfile never installs (only
           # google-adk[a2a]). The container crashed on every boot with
           # ModuleNotFoundError until this was removed — see PR history.
-          adk deploy cloud_run \
-            --project="${PROJECT_ID}" \
-            --region="${REGION}" \
-            --service_name="${SERVICE}" \
-            --app_name="${APP_NAME}" \
-            --adk_version="${ADK_VERSION}" \
-            caveman-agent/caveman_agent \
-            -- \
-            "${ACCESS_FLAG}" \
-            --service-account="${RUNTIME_SA}" \
-            --build-service-account="projects/${PROJECT_ID}/serviceAccounts/${BUILD_SA}" \
-            2>&1 | tee /tmp/adk-deploy.log
+          #
+          # UI_FLAG goes in an array, not inline: quoting an empty UI_FLAG as
+          # "${UI_FLAG}" would pass click an empty-string argument where none
+          # was asked for, which --with_ui (a no-value boolean flag) rejects.
+          adk_args=(
+            deploy cloud_run
+            --project="${PROJECT_ID}"
+            --region="${REGION}"
+            --service_name="${SERVICE}"
+            --app_name="${APP_NAME}"
+            --adk_version="${ADK_VERSION}"
+          )
+          [ -n "${UI_FLAG}" ] && adk_args+=("${UI_FLAG}")
+          adk_args+=(
+            caveman-agent/caveman_agent
+            --
+            "${ACCESS_FLAG}"
+            --service-account="${RUNTIME_SA}"
+            --build-service-account="projects/${PROJECT_ID}/serviceAccounts/${BUILD_SA}"
+          )
+
+          adk "${adk_args[@]}" 2>&1 | tee /tmp/adk-deploy.log
 
           if grep -qiE '^(Deploy failed|Deployment failed)' /tmp/adk-deploy.log; then
             echo "::error::adk reported a failed deploy (it still exited 0 — see log above)"
@@ -106,6 +121,8 @@ jobs:
           fi
 
       - name: Report service URL
+        env:
+          WITH_UI: ${{ inputs.with_ui && 'true' || 'false' }}
         run: |
           URL=$(gcloud run services describe "${SERVICE}" \
             --region "${REGION}" --project "${PROJECT_ID}" \
@@ -117,7 +134,12 @@ jobs:
           echo "| URL | \`${URL}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Region | \`${REGION}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Runtime SA | \`${RUNTIME_SA}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Web UI | \`${WITH_UI}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${WITH_UI}" = "true" ]; then
+            echo "⚠️ ADK marks \`--with_ui\` dev/test only — not for production traffic." >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "Private by default. Reach it with:" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "gcloud run services proxy ${SERVICE} --region ${REGION}" >> "$GITHUB_STEP_SUMMARY"
