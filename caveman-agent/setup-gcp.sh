@@ -63,6 +63,23 @@ for role in roles/logging.logWriter roles/storage.objectUser; do
     --condition=None --quiet >/dev/null
 done
 
+say "Creating the source-staging role (skipped if present)"
+# `gcloud run deploy --source` CREATES the run-sources-* staging bucket on
+# first use. roles/storage.objectUser covers objects but not buckets, so the
+# deploy 403s before the build starts. Google's docs reach for
+# roles/storage.admin here; these three permissions are what it actually needs.
+gcloud iam roles create cloudRunSourceStaging \
+  --project="${PROJECT_ID}" \
+  --title="Cloud Run source staging bucket" \
+  --description="Create and inspect the run-sources-* staging bucket that gcloud run deploy --source requires. Narrower than roles/storage.admin." \
+  --permissions=storage.buckets.create,storage.buckets.get,storage.buckets.list \
+  --stage=GA 2>/dev/null >/dev/null || echo "already exists"
+
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${DEPLOY_SA}" \
+  --role="projects/${PROJECT_ID}/roles/cloudRunSourceStaging" \
+  --condition=None --quiet >/dev/null
+
 say "Letting the deploy account act as the runtime account"
 # Deploying a service that RUNS AS another identity requires this on the
 # target account. Without it the deploy fails at the last step with a

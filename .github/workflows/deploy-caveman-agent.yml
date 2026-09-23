@@ -78,6 +78,11 @@ jobs:
           CLOUDSDK_CORE_DISABLE_PROMPTS: '1'
           ACCESS_FLAG: ${{ inputs.public && '--allow-unauthenticated' || '--no-allow-unauthenticated' }}
         run: |
+          set -o pipefail
+          # `adk deploy cloud_run` exits 0 even when the gcloud call under it
+          # fails — it prints "Deploy failed" and returns success. Without this
+          # tee/grep the step goes green on a deploy that never happened, and
+          # the first sign of trouble is the describe step further down.
           adk deploy cloud_run \
             --project="${PROJECT_ID}" \
             --region="${REGION}" \
@@ -89,7 +94,13 @@ jobs:
             -- \
             "${ACCESS_FLAG}" \
             --service-account="${RUNTIME_SA}" \
-            --build-service-account="projects/${PROJECT_ID}/serviceAccounts/${BUILD_SA}"
+            --build-service-account="projects/${PROJECT_ID}/serviceAccounts/${BUILD_SA}" \
+            2>&1 | tee /tmp/adk-deploy.log
+
+          if grep -qiE '^(Deploy failed|Deployment failed)' /tmp/adk-deploy.log; then
+            echo "::error::adk reported a failed deploy (it still exited 0 — see log above)"
+            exit 1
+          fi
 
       - name: Report service URL
         run: |
