@@ -1,0 +1,110 @@
+name: Deploy caveman-agent
+
+# Deploys the ADK agent in caveman-agent/ to Cloud Run.
+#
+# Authentication is keyless: GitHub mints an OIDC token, Google exchanges it
+# for short-lived credentials for the deploy service account. No service
+# account JSON key exists, so there is none to leak or rotate. The trust is
+# pinned to this repository in the Workload Identity provider's attribute
+# condition — see caveman-agent/setup-gcp.sh.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'caveman-agent/**'
+      - 'skills/caveman/SKILL.md'
+      - '.github/workflows/deploy-caveman-agent.yml'
+  workflow_dispatch:
+    inputs:
+      public:
+        description: 'Deploy with --allow-unauthenticated (anyone with the URL can spend Vertex quota)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  # Required for Workload Identity Federation. Without it the auth step cannot
+  # request an OIDC token and fails with a permissions error, not a login error.
+  id-token: write
+
+# A second push while a deploy is running would race it onto the same service.
+concurrency:
+  group: deploy-caveman-agent
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: deepak-jump-start
+  REGION: us-central1
+  SERVICE: caveman-agent
+  APP_NAME: caveman_agent
+  RUNTIME_SA: caveman-agent-run@deepak-jump-start.iam.gserviceaccount.com
+  BUILD_SA: agent-deployer@deepak-jump-start.iam.gserviceaccount.com
+  # Pinned so CI installs the same ADK that generates the Dockerfile locally.
+  ADK_VERSION: '2.8.0'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ADK
+        run: pip install "google-adk==${ADK_VERSION}"
+
+      # Fails the deploy if instruction.md drifted from skills/caveman/SKILL.md.
+      # Regenerating here instead would silently ship an instruction that does
+      # not match what was reviewed in the pull request.
+      - name: Verify instruction is in sync with the skill
+        run: python caveman-agent/sync_instruction.py --check
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        env:
+          # gcloud prompts are fatal on a runner with no tty.
+          CLOUDSDK_CORE_DISABLE_PROMPTS: '1'
+          ACCESS_FLAG: ${{ inputs.public && '--allow-unauthenticated' || '--no-allow-unauthenticated' }}
+        run: |
+          adk deploy cloud_run \
+            --project="${PROJECT_ID}" \
+            --region="${REGION}" \
+            --service_name="${SERVICE}" \
+            --app_name="${APP_NAME}" \
+            --adk_version="${ADK_VERSION}" \
+            --trace_to_cloud \
+            caveman-agent/caveman_agent \
+            -- \
+            "${ACCESS_FLAG}" \
+            --service-account="${RUNTIME_SA}" \
+            --build-service-account="projects/${PROJECT_ID}/serviceAccounts/${BUILD_SA}"
+
+      - name: Report service URL
+        run: |
+          URL=$(gcloud run services describe "${SERVICE}" \
+            --region "${REGION}" --project "${PROJECT_ID}" \
+            --format='value(status.url)')
+          echo "### caveman-agent deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| | |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| URL | \`${URL}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Region | \`${REGION}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Runtime SA | \`${RUNTIME_SA}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Private by default. Reach it with:" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "gcloud run services proxy ${SERVICE} --region ${REGION}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
