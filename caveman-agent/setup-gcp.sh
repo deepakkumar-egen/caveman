@@ -89,6 +89,17 @@ gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SA}" \
   --role="roles/iam.serviceAccountUser" \
   --project "${PROJECT_ID}" --quiet >/dev/null
 
+say "Letting the deploy account act as ITSELF as build service account"
+# gcloud run deploy --build-service-account requires the caller be able to act
+# as that account even when caller and build account are the SAME identity.
+# Self-impersonation still needs an explicit binding, or the deploy fails with
+# "caller does not have permission to act as service account ..." naming
+# agent-deployer's own numeric ID.
+gcloud iam service-accounts add-iam-policy-binding "${DEPLOY_SA}" \
+  --member="serviceAccount:${DEPLOY_SA}" \
+  --role="roles/iam.serviceAccountUser" \
+  --project "${PROJECT_ID}" --quiet >/dev/null
+
 say "Creating the Workload Identity pool (skipped if present)"
 gcloud iam workload-identity-pools create "${POOL}" \
   --location=global \

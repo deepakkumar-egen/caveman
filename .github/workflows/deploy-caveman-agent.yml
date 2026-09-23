@@ -83,13 +83,16 @@ jobs:
           # fails — it prints "Deploy failed" and returns success. Without this
           # tee/grep the step goes green on a deploy that never happened, and
           # the first sign of trouble is the describe step further down.
+          # No --trace_to_cloud: it imports opentelemetry.exporter.cloud_trace,
+          # a package the generated Dockerfile never installs (only
+          # google-adk[a2a]). The container crashed on every boot with
+          # ModuleNotFoundError until this was removed — see PR history.
           adk deploy cloud_run \
             --project="${PROJECT_ID}" \
             --region="${REGION}" \
             --service_name="${SERVICE}" \
             --app_name="${APP_NAME}" \
             --adk_version="${ADK_VERSION}" \
-            --trace_to_cloud \
             caveman-agent/caveman_agent \
             -- \
             "${ACCESS_FLAG}" \
