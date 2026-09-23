@@ -139,7 +139,7 @@ service *runs as*. They are not the same risk.
 
 | | Account | Roles |
 |---|---|---|
-| **Build** | `agent-deployer@` | `artifactregistry.writer`, `cloudbuild.builds.editor`, `run.admin`, `logging.logWriter`, `storage.objectUser` |
+| **Build** | `agent-deployer@` | `artifactregistry.writer`, `cloudbuild.builds.editor`, `run.admin`, `logging.logWriter`, `storage.objectUser`, `cloudRunSourceStaging` (custom), `iam.serviceAccountUser` (on itself) |
 | **Runtime** | `caveman-agent-run@` | `roles/aiplatform.user` |
 
 The runtime account is the identity the model acts with on every request, so it
@@ -155,31 +155,20 @@ The default compute service account would have worked too, but it carries
 the uploaded source. `cloudbuild.builds.editor` alone does not cover either,
 and the build fails at startup without them.
 
-### Required once per project
+Two more grants the build account needs, both discovered the hard way on the
+first real deploy and now baked into `setup-gcp.sh`:
 
-```bash
-gcloud services enable \
-  aiplatform.googleapis.com \
-  run.googleapis.com \
-  cloudbuild.googleapis.com \
-  artifactregistry.googleapis.com \
-  --project deepak-jump-start
+- **`storage.buckets.create`/`get`/`list`** (the custom `cloudRunSourceStaging`
+  role) — `gcloud run deploy --source` *creates* the `run-sources-*` staging
+  bucket on first use. `storage.objectUser` covers objects, not buckets, and
+  the deploy 403s before the build even starts without this.
+- **`roles/iam.serviceAccountUser` on itself** — `--build-service-account`
+  requires the caller be able to act as that account, including when caller
+  and build account are the *same* identity. Self-impersonation still needs an
+  explicit binding, or the deploy fails naming the account's own numeric ID.
 
-gcloud iam service-accounts create caveman-agent-run \
-  --display-name="caveman-agent Cloud Run runtime" \
-  --project deepak-jump-start
-
-gcloud projects add-iam-policy-binding deepak-jump-start \
-  --member="serviceAccount:caveman-agent-run@deepak-jump-start.iam.gserviceaccount.com" \
-  --role="roles/aiplatform.user"
-
-# The build account needs these two to function as a custom Cloud Build SA.
-for role in roles/logging.logWriter roles/storage.objectUser; do
-  gcloud projects add-iam-policy-binding deepak-jump-start \
-    --member="serviceAccount:agent-deployer@deepak-jump-start.iam.gserviceaccount.com" \
-    --role="$role"
-done
-```
+All of the above is one run of `setup-gcp.sh` — see
+[One-time setup](#one-time-setup) above.
 
 ## Known limits
 
