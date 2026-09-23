@@ -105,6 +105,22 @@ gcloud run services proxy caveman-agent --region us-central1
 Run the workflow with `public: true` to use `--allow-unauthenticated` instead.
 That lets anyone with the URL spend Vertex quota against `deepak-jump-start`.
 
+### It deploys as the API server, not the web UI
+
+By default this ships `adk api_server` — JSON endpoints only, meant for a
+client to call. **Opening the root URL in a browser correctly returns
+`{"detail":"Not Found"}`; that is not a broken deploy.** `/docs` has the
+OpenAPI schema; `/list-apps` lists registered agents.
+
+For the browsable chat page, run the workflow with `with_ui: true`. ADK's own
+CLI help marks `--with_ui` **dev/test only** — the summary step prints a
+warning when it's on. Reasonable to use once to confirm the agent responds,
+not to leave on for real traffic.
+
+```bash
+gh workflow run "Deploy caveman-agent" -f with_ui=true
+```
+
 ### The instruction check is a gate, not a convenience
 
 CI runs `sync_instruction.py --check` and **fails** if `instruction.md` has
